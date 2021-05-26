@@ -6,6 +6,7 @@ from torch.nn import functional as F
 from itertools import chain
 
 import torch
+import torch.nn as nn
 import os, sys
 import numpy as np
 import argparse
@@ -47,8 +48,13 @@ class Manager():
         
         # Load model    
         print("Loading the model...")
-        self.model = GPT2LMHeadModel.from_pretrained('gpt2').to(self.config['device'])
+        # -- single gpu
+        #self.model = GPT2LMHeadModel.from_pretrained('gpt2').to(self.config['device'])
+        self.model = GPT2LMHeadModel.from_pretrained('gpt2')
         self.model.resize_token_embeddings(self.config['vocab_size'])
+        # -- multi gpu
+        self.model = nn.DataParallel(self.model)
+        self.model = self.model.cuda()
             
         if mode == 'train':            
             # Load optimizer
@@ -112,12 +118,19 @@ class Manager():
                 loss, logits = outputs[0], outputs[1]
                 
                 self.optim.zero_grad()
-                loss.backward()
+                # -- single gpu
+                # loss.backward()
+                # -- multi gpu
+                loss.mean().backward()
                 self.optim.step()
                 
-                train_losses.append(loss.item())
-                train_ppls.append(torch.exp(loss).item())
-            
+                # -- single gpu
+                # train_losses.append(loss.item())
+                # train_ppls.append(torch.exp(loss).item())
+                # -- multi gpu
+                train_losses.append(loss.mean().item())
+                train_ppls.append(torch.exp(loss.mean()).item())
+        
             train_loss = np.mean(train_losses)
             train_ppl = np.mean(train_ppls)
             print(f"Train loss: {train_loss} || Train perplexity: {train_ppl}")
@@ -160,8 +173,14 @@ class Manager():
                 
                 loss, logits = outputs[0], outputs[1]
                 
-                valid_losses.append(loss.item())
-                valid_ppls.append(torch.exp(loss).item())
+                try:
+                    # -- single gpu
+                    valid_losses.append(loss.item())
+                    valid_ppls.append(torch.exp(loss).item())
+                except:
+                    # -- multi gpu
+                    valid_losses.append(loss.mean().item())
+                    valid_ppls.append(torch.exp(loss.mean()).item())
               
             valid_loss = np.mean(valid_losses)
             valid_ppl = np.mean(valid_ppls)
@@ -277,14 +296,18 @@ if __name__=='__main__':
     
     assert args.mode == 'train' or args.mode=='inference', print("Please specify a correct mode name, 'train' or 'inference'.")
               
+
     if args.mode == 'train':
+        os.environ['CUDA_VISIBLE_DEVICES'] = "0,1"
+
         manager = Manager(args.config_path, args.mode, ckpt_name=args.ckpt_name)
 
         manager.train()
         
     elif args.mode == 'inference':
         assert args.ckpt_name is not None, "Please specify the trained model checkpoint."
-        
+        os.environ['CUDA_VISIBLE_DEVICES'] = "-1"
+
         manager = Manager(args.config_path, args.mode, ckpt_name=args.ckpt_name)
         
         manager.inference()
